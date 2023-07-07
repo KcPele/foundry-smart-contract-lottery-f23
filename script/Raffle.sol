@@ -32,6 +32,14 @@ import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2
  */
 contract Raffle is VRFConsumerBaseV2 {
     error Raffle__NotEnoughEthSent();
+    error Raffle__TransferFailed();
+    error Raffle__RaffleNotOpen();
+
+    /** Type Decleration */
+    enum RaffleState {
+        OPEN,
+        CALCULATING
+    }
 
     /** State variables */
     uint16 private constant REQUEST_CONFIRMATIONS = 3;
@@ -46,9 +54,12 @@ contract Raffle is VRFConsumerBaseV2 {
     uint32 private immutable i_callbackGasLimit;
     address payable[] private s_players;
     uint256 private s_lastTimeStamp;
+    address private s_resentWinner;
+    RaffleState private s_raffleState;
 
     /** Events */
     event EnterRaffle(address indexed player);
+    event PickedWinner(address indexed winner);
 
     constructor(
         uint256 enntranceFee,
@@ -65,11 +76,15 @@ contract Raffle is VRFConsumerBaseV2 {
         i_subscriptionId = subscriptionId;
         i_keyHash = gasLane;
         i_callbackGasLimit = callbackGasLimit;
+        s_raffleState = RaffleState.OPEN;
     }
 
     function enterRaffle() external payable {
         if (msg.value < i_entranceFee) {
             revert Raffle__NotEnoughEthSent();
+        }
+        if (s_raffleState == RaffleState.CALCULATING) {
+            revert Raffle__RaffleNotOpen();
         }
         s_players.push(payable(msg.sender));
         emit EnterRaffle(msg.sender);
@@ -83,6 +98,7 @@ contract Raffle is VRFConsumerBaseV2 {
         if (block.timestamp - s_lastTimeStamp > i_interval) {
             revert();
         }
+        s_raffleState = RaffleState.CALCULATING;
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
             i_keyHash,
             i_subscriptionId,
@@ -92,10 +108,25 @@ contract Raffle is VRFConsumerBaseV2 {
         );
     }
 
+    //CEI -> check, effects, interactions
     function fulfillRandomWords(
         uint256 requestId,
         uint256[] memory randomWords
-    ) internal override {}
+    ) internal override {
+        uint256 indexOfWinner = randomWords[0] % s_players.length;
+        address payable winner = s_players[indexOfWinner];
+        s_resentWinner = winner;
+        s_raffleState = RaffleState.OPEN;
+        //reseting the arrays
+        s_players = new address payable[](0);
+        s_lastTimeStamp = block.timestamp;
+        (bool success, ) = winner.call{value: address(this).balance}("");
+        if (!success) {
+            revert Raffle__TransferFailed();
+        }
+
+        emit PickedWinner(winner);
+    }
 
     /** Getter function */
 
